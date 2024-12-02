@@ -168,7 +168,22 @@ def tensor_map(
         in_shape: Shape,
         in_strides: Strides,
     ) -> None:
-        raise NotImplementedError("Need to include this file from past assignment.")
+        out_size = len(out)
+        
+        # optimization: if shapes and strides are aligned, we don't need to compute indices
+        if np.allclose(out_shape, in_shape) and np.allclose(out_strides, in_strides):
+            # directly apply the function with parallel execution
+            for i in prange(out_size):
+                out[i] = fn(in_storage[i])                                          # just apply function directly
+        else:
+            # not aligned so we have to actually calculate indices
+            out_index = np.zeros_like(out_shape)
+            in_index = np.zeros_like(in_shape)
+            
+            for i in prange(out_size):
+                to_index(i, out_shape, out_index)                                   # convert flat index to multidim
+                broadcast_index(out_index, out_shape, in_shape, in_index)           # broadcast
+                out[i] = fn(in_storage[index_to_position(in_index, in_strides)])    # apply function 
 
     return njit(_map, parallel=True)  # type: ignore
 
@@ -207,7 +222,33 @@ def tensor_zip(
         b_shape: Shape,
         b_strides: Strides,
     ) -> None:
-        raise NotImplementedError("Need to include this file from past assignment.")
+        out_size = len(out)
+        
+        # same optimization as map, don't compute indices if aligned
+        if (np.allclose(out_shape, a_shape) and np.allclose(out_strides, a_strides)) and \
+            (np.allclose(a_shape, b_shape) and np.allclose(a_strides, b_strides)):
+                # directly apply fn to a and b with parallel execution
+                for i in prange(out_size):
+                    out[i] = fn(a_storage[i], b_storage[i])
+        else:
+            # not aligned so we have to compute indices :(
+            a_index = np.zeros_like(a_shape)
+            b_index = np.zeros_like(b_shape)
+            out_index = np.zeros_like(out_shape)
+            
+            # parallel computing
+            for i in prange(out_size):
+                # get multidim index
+                to_index(i, out_shape, out_index)
+                # broadcast to a and b
+                broadcast_index(out_index, out_shape, a_shape, a_index)
+                broadcast_index(out_index, out_shape, b_shape, b_index)
+                # apply fn to a and b
+                out[i] = fn(
+                    a_storage[index_to_position(a_index, a_strides)],
+                    b_storage[index_to_position(b_index, b_strides)]
+                )
+                
 
     return njit(_zip, parallel=True)  # type: ignore
 
@@ -242,7 +283,27 @@ def tensor_reduce(
         a_strides: Strides,
         reduce_dim: int,
     ) -> None:
-        raise NotImplementedError("Need to include this file from past assignment.")
+        out_size = len(out)
+        out_index = np.zeros_like(out_shape)
+        
+        # we don't have to check if the tensors are aligned here
+        for i in prange(out_size):
+            # get multi dim index
+            to_index(i, out_shape, out_index)
+            # base position in input tensor
+            a_position = index_to_position(out_index, a_strides)
+            # initialize with first value
+            out_val = a_storage[a_position]
+            
+            # reduce along specified dimension
+            for _ in range(1, a_shape[reduce_dim]):
+                # move along reduction dimension
+                a_position += a_strides[reduce_dim]
+                # combine values
+                out_val = fn(out_val, a_storage[a_position])
+            # store the result we just calculated
+            out[i] = out_val 
+                    
 
     return njit(_reduce, parallel=True)  # type: ignore
 
@@ -290,10 +351,33 @@ def _tensor_matrix_multiply(
         None : Fills in `out`
 
     """
+    # remember, matrix multiplication def:
+    #   sum(A[i, k] * B[k, j])
     a_batch_stride = a_strides[0] if a_shape[0] > 1 else 0
     b_batch_stride = b_strides[0] if b_shape[0] > 1 else 0
 
-    raise NotImplementedError("Need to include this file from past assignment.")
+    # parallel execution over all elements in out (c)
+    for out_pos in prange(len(out)):
+        # compute row and column with modulo arithmetic
+        out_row = (out_pos // out_strides[-2] % out_shape[-2])
+        out_col = (out_pos // out_strides[-1] % out_shape[-1])
+        # get batch index for higher dim tensors
+        out_batch = out_pos // out_strides[0] if len(out_shape) > 2 else 0
+        
+        # compute a & b base positions
+        a_pos = out_batch * a_batch_stride + out_row * a_strides[-2]        # starting memory pos in A for curr row in A
+        b_pos = out_batch * b_batch_stride + out_col * b_strides[-1]        # starting memory pos in B for curr col in B
+        
+        # inner loop summation
+        curr_sum = 0.0
+        for _ in range(b_shape[-2]):
+            # compute dot product and add to sum
+            curr_sum += a_storage[a_pos] * b_storage[b_pos]
+            # change a&b_pos accordingly
+            a_pos += a_strides[-1]
+            b_pos += b_strides[-2]
+        # update result in storage
+        out[out_pos] = curr_sum
 
 
 tensor_matrix_multiply = njit(_tensor_matrix_multiply, parallel=True)

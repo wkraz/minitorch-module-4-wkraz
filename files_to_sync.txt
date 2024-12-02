@@ -11,13 +11,10 @@ project/run_manual.py
 project/run_scalar.py
 project/run_tensor.py
 minitorch/operators.py
-minitorch/module.py
-minitorch/autodiff.py
 minitorch/tensor.py
 minitorch/datasets.py
 minitorch/testing.py
 minitorch/optim.py
-minitorch/tensor_ops.py
 minitorch/fast_ops.py
 minitorch/cuda_ops.py
 project/parallel_check.py
